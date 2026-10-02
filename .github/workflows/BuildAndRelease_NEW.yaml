@@ -1,0 +1,45 @@
+name: 'Build and Release'
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Tag of the release (ex. 1.2.3)
+        required: true
+
+# Must cover everything the called workflows need (CI/CD + Create Release)
+permissions:
+  actions: read
+  contents: write
+  id-token: write
+  pages: write
+  packages: read
+  pull-requests: write
+  security-events: write
+
+jobs:
+  CICD:
+    uses: ./.github/workflows/CICD.yaml
+    secrets: inherit
+    with:
+      caller: ${{ github.workflow }}
+
+  CreateRelease:
+    needs: [ CICD ]
+    uses: ./.github/workflows/CreateRelease.yaml
+    secrets: inherit
+    with:
+      caller: ${{ github.workflow }}
+      name: v${{ inputs.tag }}
+      tag: ${{ inputs.tag }}
+      releaseType: Prerelease
+      buildVersion: latest
+
+  ShowOutputs:
+    needs: [ CreateRelease ]
+    runs-on: [ ubuntu-latest ]
+    steps:
+      - run: |
+          echo "releaseId:      ${{ needs.CreateRelease.outputs.releaseId }}"
+          echo "releaseVersion: ${{ needs.CreateRelease.outputs.releaseVersion }}"
+          echo "commitish:      ${{ needs.CreateRelease.outputs.commitish }}"

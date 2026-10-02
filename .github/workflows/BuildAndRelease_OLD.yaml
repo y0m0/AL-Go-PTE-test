@@ -1,0 +1,235 @@
+name: '  Build And Release'
+run-name: "Build and Release - Version ${{ inputs.tag || 'auto' }}"
+
+on:
+  push:
+    branches: [ 'main' ]
+    paths-ignore:
+      - '**.md'
+      - '.github/**'
+      - '.AL-Go'
+  workflow_dispatch:
+    inputs:
+      buildVersion:
+        description: Build version to promote to release (default is latest)
+        required: false
+        default: 'latest'
+      name:
+        description: Name of this release
+        required: false
+        default: ''
+      tag:
+        description: Tag of this release (needs to be semantic version string https://semver.org, ex. 1.0.0)
+        required: false
+        default: ''
+      releaseType:
+        description: Release, prerelease or draft?
+        type: choice
+        options:
+          - Release
+          - Prerelease
+          - Draft
+        default: Release
+      createReleaseBranch:
+        description: Create Release Branch?
+        type: boolean
+        default: false
+      releaseBranchPrefix:
+        description: The prefix for the release branch. Used only if 'Create Release Branch?' is checked.
+        type: string
+        default: release/
+      updateVersionNumber:
+        description: New Version Number in main branch. Use Major.Minor (optionally add .Build for versioningstrategy 3) for absolute change, or +1, +0.1 (or +0.0.1 for versioningstrategy 3) incremental change.
+        required: false
+        default: '+0.0.1'
+      skipUpdatingDependencies:
+        description: Skip updating dependency version numbers in all apps.
+        type: boolean
+        default: false
+      directCommit:
+        description: Direct Commit?
+        type: boolean
+        default: false
+      useGhTokenWorkflow:
+        description: Use GhTokenWorkflow for PR/Commit?
+        type: boolean
+        default: true
+
+permissions:
+  actions: write
+  contents: write
+  id-token: write
+  pages: read
+  security-events: write
+  pull-requests: write
+
+defaults:
+  run:
+    shell: pwsh
+
+env:
+  ALGoOrgSettings: ${{ vars.ALGoOrgSettings }}
+  ALGoRepoSettings: ${{ vars.ALGoRepoSettings }}
+
+jobs:
+  BuildAndRelease:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3 # v6.0.0
+
+      - name: Run CICD then CreateRelease
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
+        env:
+          BUILD_VERSION: ${{ inputs.buildVersion }}
+          RELEASE_NAME: ${{ inputs.name }}
+          TAG: ${{ inputs.tag }}
+          RELEASE_TYPE: ${{ inputs.releaseType }}
+          CREATE_RELEASE_BRANCH: ${{ inputs.createReleaseBranch }}
+          RELEASE_BRANCH_PREFIX: ${{ inputs.releaseBranchPrefix }}
+          UPDATE_VERSION_NUMBER: ${{ inputs.updateVersionNumber }}
+          SKIP_UPDATING_DEPENDENCIES: ${{ inputs.skipUpdatingDependencies }}
+          DIRECT_COMMIT: ${{ inputs.directCommit }}
+          USE_GH_TOKEN_WORKFLOW: ${{ inputs.useGhTokenWorkflow }}
+          IS_AUTO_TRIGGER: ${{ github.event_name == 'push' }}
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const workflowOwner = context.repo.owner;
+            const workflowRepo = context.repo.repo;
+            const branch = context.ref.replace('refs/heads/', '');
+            const isAutoTrigger = process.env.IS_AUTO_TRIGGER === 'true';
+            // 2022-11-28 (Octokit default) is sunset on 2028-03-10
+            const headers = { 'X-GitHub-Api-Version': '2026-03-10' };
+
+            async function sleep(ms) {
+              return new Promise(resolve => setTimeout(resolve, ms));
+            }
+
+            async function dispatchAndWait(workflowFile, inputs) {
+              core.info(`Dispatching workflow ${workflowFile} on branch ${branch}`);
+              const { status, data: dispatch } = await github.rest.actions.createWorkflowDispatch({
+                owner: workflowOwner,
+                repo: workflowRepo,
+                workflow_id: workflowFile,
+                ref: branch,
+                inputs,
+                headers
+              });
+
+              const runId = dispatch?.workflow_run_id;
+              if (!runId) {
+                throw new Error(`Dispatch of ${workflowFile} returned HTTP ${status} without workflow_run_id`);
+              }
+              core.info(`Dispatched ${workflowFile} as run ${runId}: ${dispatch.html_url}`);
+
+              const maxAttempts = 240; // ~2 hours with 30s interval
+              const delayMs = 30000;
+
+              for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+                const { data: run } = await github.rest.actions.getWorkflowRun({
+                  owner: workflowOwner,
+                  repo: workflowRepo,
+                  run_id: runId,
+                  headers
+                });
+
+                core.info(`Run ${runId} for ${workflowFile} has status ${run.status} (attempt ${attempt}/${maxAttempts})`);
+                if (run.status === 'completed') {
+                  core.info(`Workflow ${workflowFile} completed with conclusion ${run.conclusion}`);
+                  if (run.conclusion !== 'success') {
+                    throw new Error(`Workflow ${workflowFile} failed with conclusion ${run.conclusion}: ${run.html_url}`);
+                  }
+                  return runId;
+                }
+
+                await sleep(delayMs);
+              }
+
+              throw new Error(`Timed out waiting for workflow ${workflowFile} to complete`);
+            }
+
+            async function extractVersionFromArtifacts(runId) {
+              core.info(`Extracting version from artifacts of run ${runId}`);
+              const { data: artifacts } = await github.rest.actions.listWorkflowRunArtifacts({
+                owner: workflowOwner,
+                repo: workflowRepo,
+                run_id: runId,
+                headers,
+                per_page: 100
+              });
+
+              core.info(`Found ${artifacts.artifacts.length} artifacts`);
+              
+              // Look for artifact with pattern: *-Apps-X.Y.Z.W
+              const appArtifact = artifacts.artifacts.find(a => a.name.includes('-Apps-'));
+              
+              if (appArtifact) {
+                core.info(`Found Apps artifact: ${appArtifact.name}`);
+                // Extract version from pattern like "pte-test-main-Apps-1.0.4.0"
+                const versionMatch = appArtifact.name.match(/-Apps-(\d+)\.(\d+)\.(\d+)\.(\d+)$/);
+                if (versionMatch) {
+                  // DetermineArtifactsForRelease needs the full 4-part version; the tag uses 3-part semver
+                  const fullVersion = `${versionMatch[1]}.${versionMatch[2]}.${versionMatch[3]}.${versionMatch[4]}`;
+                  const version = `${versionMatch[1]}.${versionMatch[2]}.${versionMatch[3]}`;
+                  core.info(`Extracted version: ${version} (build: ${fullVersion})`);
+                  return { fullVersion, version };
+                }
+              }
+              
+              // Fallback: try any artifact with version pattern
+              for (const artifact of artifacts.artifacts) {
+                const versionMatch = artifact.name.match(/(\d+)\.(\d+)\.(\d+)\.(\d+)$/);
+                if (versionMatch) {
+                  const fullVersion = `${versionMatch[1]}.${versionMatch[2]}.${versionMatch[3]}.${versionMatch[4]}`;
+                  const version = `${versionMatch[1]}.${versionMatch[2]}.${versionMatch[3]}`;
+                  core.info(`Extracted version from ${artifact.name}: ${version} (build: ${fullVersion})`);
+                  return { fullVersion, version };
+                }
+              }
+              
+              throw new Error('Could not extract version from any artifact');
+            }
+
+            // Run CICD workflow
+            const cicdRunId = await dispatchAndWait('CICD.yaml', {});
+            
+            // Determine release parameters
+            let releaseInputs;
+            
+            if (isAutoTrigger) {
+              // Extract version from CICD artifacts
+              const { fullVersion, version } = await extractVersionFromArtifacts(cicdRunId);
+              core.info(`Auto-trigger mode: using version ${version} (build ${fullVersion})`);
+              
+              // Other inputs are omitted so CreateRelease uses its AL-Go workflowDefaultInputs
+              releaseInputs = {
+                buildVersion: fullVersion,
+                name: `Release ${version}`,
+                tag: version
+              };
+            } else {
+              // Use manual inputs
+              releaseInputs = {
+                buildVersion: process.env.BUILD_VERSION,
+                name: process.env.RELEASE_NAME,
+                tag: process.env.TAG,
+                releaseType: process.env.RELEASE_TYPE,
+                createReleaseBranch: process.env.CREATE_RELEASE_BRANCH,
+                releaseBranchPrefix: process.env.RELEASE_BRANCH_PREFIX,
+                updateVersionNumber: process.env.UPDATE_VERSION_NUMBER,
+                skipUpdatingDependencies: process.env.SKIP_UPDATING_DEPENDENCIES,
+                directCommit: process.env.DIRECT_COMMIT,
+                useGhTokenWorkflow: process.env.USE_GH_TOKEN_WORKFLOW
+              };
+            }
+
+            // Remove empty values so CreateRelease uses its own defaults
+            for (const key of Object.keys(releaseInputs)) {
+              if (releaseInputs[key] === '' || releaseInputs[key] === undefined) {
+                delete releaseInputs[key];
+              }
+            }
+
+            core.info(`Release inputs: ${JSON.stringify(releaseInputs, null, 2)}`);
+            await dispatchAndWait('CreateRelease.yaml', releaseInputs);
