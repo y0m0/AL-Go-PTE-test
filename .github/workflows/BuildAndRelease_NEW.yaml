@@ -65,6 +65,11 @@ permissions:
   pull-requests: write
   security-events: write
 
+# Queue runs instead of building and releasing in parallel (e.g. two pushes in quick succession)
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
 defaults:
   run:
     shell: pwsh
