@@ -1,5 +1,5 @@
 {
-  "$schema": "https://raw.githubusercontent.com/microsoft/AL-Go-Actions/v9.2/.Modules/settings.schema.json",
-  "type": "PTE",
-  "templateUrl": "https://github.com/microsoft/AL-Go-PTE@main"
+    "$schema": "https://raw.githubusercontent.com/microsoft/AL-Go-Actions/v9.2/.Modules/settings.schema.json",
+    "type": "PTE",
+    "templateUrl": "https://github.com/y0m0/AL-Go@feature/workflow_call"
 }
