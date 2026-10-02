@@ -19,3 +19,8 @@ rad.json
 .snapshots/
 cache_*
 ~$*
+*.rest
+*.g.xlf
+**/.vscode/*.json
+!**/.vscode/settings.json
+!**/.vscode/ruleset.json
