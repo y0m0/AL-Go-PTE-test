@@ -1,27 +1,27 @@
-name: '  Build And Release'
+name: "  Build And Release"
 run-name: "Build and Release - Version ${{ inputs.tag || 'auto' }}"
 
 on:
-  push:
-    branches: [ 'main' ]
-    paths-ignore:
-      - '**.md'
-      - '.github/**'
-      - '.AL-Go'
+  # push:
+  #   branches: [ 'main' ]
+  #   paths-ignore:
+  #     - '**.md'
+  #     - '.github/**'
+  #     - '.AL-Go'
   workflow_dispatch:
     inputs:
       buildVersion:
         description: Build version to promote to release (default is latest)
         required: false
-        default: 'latest'
+        default: "latest"
       name:
         description: Name of this release
         required: false
-        default: ''
+        default: ""
       tag:
         description: Tag of this release (needs to be semantic version string https://semver.org, ex. 1.0.0)
         required: false
-        default: ''
+        default: ""
       releaseType:
         description: Release, prerelease or draft?
         type: choice
@@ -41,7 +41,7 @@ on:
       updateVersionNumber:
         description: New Version Number in main branch. Use Major.Minor (optionally add .Build for versioningstrategy 3) for absolute change, or +1, +0.1 (or +0.0.1 for versioningstrategy 3) incremental change.
         required: false
-        default: '+0.0.1'
+        default: "+0.0.1"
       skipUpdatingDependencies:
         description: Skip updating dependency version numbers in all apps.
         type: boolean
@@ -193,10 +193,10 @@ jobs:
 
             // Run CICD workflow
             const cicdRunId = await dispatchAndWait('CICD.yaml', {});
-            
+
             // Determine release parameters
             let releaseInputs;
-            
+
             if (isAutoTrigger) {
               // Extract version from CICD artifacts
               const { fullVersion, version } = await extractVersionFromArtifacts(cicdRunId);
