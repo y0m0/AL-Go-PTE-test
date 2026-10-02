@@ -1,13 +1,61 @@
 name: 'Build and Release'
+run-name: "Build and Release - Version ${{ inputs.tag || 'auto' }}"
 
 on:
+  push:
+    branches: [ 'main' ]
+    paths-ignore:
+      - '**.md'
+      - '.github/**'
+      - '.AL-Go'
   workflow_dispatch:
     inputs:
+      buildVersion:
+        description: Build version to promote to release (default is latest, which is the build created by this run)
+        required: false
+        default: 'latest'
+      name:
+        description: Name of this release (default is Release <tag>)
+        required: false
+        default: ''
       tag:
-        description: Tag of the release (ex. 1.2.3)
-        required: true
+        description: Tag of this release (needs to be semantic version string https://semver.org, ex. 1.0.0). Default is Major.Minor.Build of the build version
+        required: false
+        default: ''
+      releaseType:
+        description: Release, prerelease or draft?
+        type: choice
+        options:
+          - Release
+          - Prerelease
+          - Draft
+        default: Release
+      createReleaseBranch:
+        description: Create Release Branch?
+        type: boolean
+        default: false
+      releaseBranchPrefix:
+        description: The prefix for the release branch. Used only if 'Create Release Branch?' is checked.
+        type: string
+        default: release/
+      updateVersionNumber:
+        description: New Version Number in main branch. Use Major.Minor (optionally add .Build for versioningstrategy 3) for absolute change, or +1, +0.1 (or +0.0.1 for versioningstrategy 3) incremental change.
+        required: false
+        default: '+0.0.1'
+      skipUpdatingDependencies:
+        description: Skip updating dependency version numbers in all apps.
+        type: boolean
+        default: false
+      directCommit:
+        description: Direct Commit?
+        type: boolean
+        default: false
+      useGhTokenWorkflow:
+        description: Use GhTokenWorkflow for PR/Commit?
+        type: boolean
+        default: true
 
-# Must cover everything the called workflows need (CI/CD + Create Release)
+# Called workflows can't get more permissions than the caller, so this must cover everything CI/CD and Create Release need
 permissions:
   actions: read
   contents: write
@@ -17,6 +65,10 @@ permissions:
   pull-requests: write
   security-events: write
 
+defaults:
+  run:
+    shell: pwsh
+
 jobs:
   CICD:
     uses: ./.github/workflows/CICD.yaml
@@ -24,22 +76,100 @@ jobs:
     with:
       caller: ${{ github.workflow }}
 
-  CreateRelease:
+  DetermineRelease:
     needs: [ CICD ]
+    runs-on: [ ubuntu-latest ]
+    outputs:
+      buildVersion: ${{ steps.determine.outputs.buildVersion }}
+      name: ${{ steps.determine.outputs.name }}
+      tag: ${{ steps.determine.outputs.tag }}
+    steps:
+      - name: Determine release version
+        id: determine
+        env:
+          GH_TOKEN: ${{ github.token }}
+          _buildVersion: ${{ inputs.buildVersion }}
+          _name: ${{ inputs.name }}
+          _tag: ${{ inputs.tag }}
+        run: |
+          $errorActionPreference = "Stop"; $ProgressPreference = "SilentlyContinue"; Set-StrictMode -Version 2.0
+
+          $buildVersion = $env:_buildVersion
+          if (-not $buildVersion -or $buildVersion -eq 'latest') {
+            # CI/CD ran as part of this workflow run, so use the version of the Apps artifact it built
+            $artifactsJson = gh api "repos/$($env:GITHUB_REPOSITORY)/actions/runs/$($env:GITHUB_RUN_ID)/artifacts?per_page=100"
+            if ($LASTEXITCODE -ne 0) { throw "Failed to list the artifacts of workflow run $($env:GITHUB_RUN_ID)" }
+            $artifactNames = @(($artifactsJson | ConvertFrom-Json).artifacts | ForEach-Object { $_.name })
+            Write-Host "Artifacts in this run:"
+            $artifactNames | ForEach-Object { Write-Host "- $_" }
+            $appsArtifactName = $artifactNames | Where-Object { $_ -match '-Apps-\d+\.\d+\.\d+\.\d+$' } | Select-Object -First 1
+            if (-not $appsArtifactName) { throw "No Apps artifact found in workflow run $($env:GITHUB_RUN_ID)" }
+            # DetermineArtifactsForRelease needs the full 4-part version
+            $buildVersion = $appsArtifactName.Substring($appsArtifactName.LastIndexOf('-') + 1)
+            Write-Host "Build version from $($appsArtifactName): $buildVersion"
+          }
+
+          $tag = $env:_tag
+          if (-not $tag) {
+            # The tag uses the 3-part semver of the build version
+            if ($buildVersion -notmatch '^(\d+\.\d+\.\d+)\.\d+$') { throw "Unable to determine a tag from build version '$buildVersion', please specify a tag" }
+            $tag = $Matches[1]
+          }
+
+          $name = $env:_name
+          if (-not $name) { $name = "Release $tag" }
+
+          Write-Host "buildVersion: $buildVersion"
+          Write-Host "name: $name"
+          Write-Host "tag: $tag"
+          Add-Content -Encoding UTF8 -Path $env:GITHUB_OUTPUT -Value "buildVersion=$buildVersion"
+          Add-Content -Encoding UTF8 -Path $env:GITHUB_OUTPUT -Value "name=$name"
+          Add-Content -Encoding UTF8 -Path $env:GITHUB_OUTPUT -Value "tag=$tag"
+
+  # On push only the version is specified, all other inputs use the workflow_call defaults of Create Release
+  # (which CheckForUpdates sets from workflowDefaultInputs in the AL-Go settings)
+  CreateRelease:
+    needs: [ DetermineRelease ]
+    if: github.event_name == 'push'
     uses: ./.github/workflows/CreateRelease.yaml
     secrets: inherit
     with:
       caller: ${{ github.workflow }}
-      name: v${{ inputs.tag }}
-      tag: ${{ inputs.tag }}
-      releaseType: Prerelease
-      buildVersion: latest
+      buildVersion: ${{ needs.DetermineRelease.outputs.buildVersion }}
+      name: ${{ needs.DetermineRelease.outputs.name }}
+      tag: ${{ needs.DetermineRelease.outputs.tag }}
+
+  # When run manually, the inputs of this workflow are passed on
+  CreateReleaseManual:
+    needs: [ DetermineRelease ]
+    if: github.event_name == 'workflow_dispatch'
+    uses: ./.github/workflows/CreateRelease.yaml
+    secrets: inherit
+    with:
+      caller: ${{ github.workflow }}
+      buildVersion: ${{ needs.DetermineRelease.outputs.buildVersion }}
+      name: ${{ needs.DetermineRelease.outputs.name }}
+      tag: ${{ needs.DetermineRelease.outputs.tag }}
+      releaseType: ${{ inputs.releaseType }}
+      createReleaseBranch: ${{ inputs.createReleaseBranch }}
+      releaseBranchPrefix: ${{ inputs.releaseBranchPrefix }}
+      updateVersionNumber: ${{ inputs.updateVersionNumber }}
+      skipUpdatingDependencies: ${{ inputs.skipUpdatingDependencies }}
+      directCommit: ${{ inputs.directCommit }}
+      useGhTokenWorkflow: ${{ inputs.useGhTokenWorkflow }}
 
   ShowOutputs:
-    needs: [ CreateRelease ]
+    needs: [ CreateRelease, CreateReleaseManual ]
+    # One of the two Create Release jobs is always skipped
+    if: (!cancelled()) && (needs.CreateRelease.result == 'success' || needs.CreateReleaseManual.result == 'success')
     runs-on: [ ubuntu-latest ]
     steps:
-      - run: |
-          echo "releaseId:      ${{ needs.CreateRelease.outputs.releaseId }}"
-          echo "releaseVersion: ${{ needs.CreateRelease.outputs.releaseVersion }}"
-          echo "commitish:      ${{ needs.CreateRelease.outputs.commitish }}"
+      - name: Show Create Release outputs
+        env:
+          _releaseId: ${{ needs.CreateRelease.outputs.releaseId || needs.CreateReleaseManual.outputs.releaseId }}
+          _releaseVersion: ${{ needs.CreateRelease.outputs.releaseVersion || needs.CreateReleaseManual.outputs.releaseVersion }}
+          _commitish: ${{ needs.CreateRelease.outputs.commitish || needs.CreateReleaseManual.outputs.commitish }}
+        run: |
+          Write-Host "releaseId:      $($env:_releaseId)"
+          Write-Host "releaseVersion: $($env:_releaseVersion)"
+          Write-Host "commitish:      $($env:_commitish)"
