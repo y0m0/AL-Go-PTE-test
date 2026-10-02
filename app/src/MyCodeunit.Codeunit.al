@@ -16,9 +16,4 @@ codeunit 50100 "PTET My Codeunit"
     begin
         exit(x - y);
     end;
-
-    procedure Multiply(x: Decimal; y: Decimal): Decimal
-    begin
-        exit(x * y);
-    end;
 }
