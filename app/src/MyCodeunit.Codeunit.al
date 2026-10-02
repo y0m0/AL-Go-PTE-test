@@ -11,4 +11,9 @@ codeunit 50100 "PTET My Codeunit"
     begin
         exit(x + y);
     end;
+
+    procedure Subtract(x: Decimal; y: Decimal): Decimal
+    begin
+        exit(x - y);
+    end;
 }
