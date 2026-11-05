@@ -10,6 +10,12 @@
   "artifact": "////weekly",
   "customCodeCops": [],
   "versioningStrategy": 3,
+  "DeployTosb_no": {
+    "Branches": [
+      "main"
+    ],
+    "ContinuousDeployment": true
+  },
   "overwriteSettings": [
     "CICDPullRequestBranches",
     "CICDPushBranches"
