@@ -21,6 +21,10 @@ on:
         description: (IncrementVersionNumber) Direct Commit?, passed on
         type: boolean
         default: false
+      useGhTokenWorkflow:
+        description: (IncrementVersionNumber) Use GhTokenWorkflow for PR/Commit?, passed on
+        type: boolean
+        default: true
       skipUpdatingDependencies:
         description: (IncrementVersionNumber) Input leak test - NOT passed on, check which value Increment Version Number sees
         type: boolean
@@ -52,6 +56,7 @@ jobs:
       caller: ${{ github.workflow }}
       versionNumber: ${{ inputs.versionNumber }}
       directCommit: ${{ inputs.directCommit }}
+      useGhTokenWorkflow: ${{ inputs.useGhTokenWorkflow }}
 
   NextMajor:
     if: inputs.workflow == 'NextMajor'
