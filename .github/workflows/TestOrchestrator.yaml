@@ -1,0 +1,81 @@
+name: 'Test Orchestrator'
+run-name: "Test Orchestrator - ${{ inputs.workflow }}"
+
+# E2E test for workflow_call: calls one AL-Go workflow, picked when running this workflow manually
+
+on:
+  workflow_dispatch:
+    inputs:
+      workflow:
+        description: AL-Go workflow to call
+        type: choice
+        options:
+          - IncrementVersionNumber
+          - NextMajor
+          - PublishToEnvironment
+      versionNumber:
+        description: (IncrementVersionNumber) New version number, passed on
+        required: false
+        default: '+0.1'
+      directCommit:
+        description: (IncrementVersionNumber) Direct Commit?, passed on
+        type: boolean
+        default: false
+      skipUpdatingDependencies:
+        description: (IncrementVersionNumber) Input leak test - NOT passed on, check which value Increment Version Number sees
+        type: boolean
+        default: false
+      environmentName:
+        description: (PublishToEnvironment) Environment mask, passed on
+        required: false
+        default: ''
+      appVersion:
+        description: (PublishToEnvironment) App version to deploy, passed on
+        required: false
+        default: 'current'
+
+# Each job grants the permissions of the workflow it calls
+permissions:
+  contents: read
+
+jobs:
+  IncrementVersionNumber:
+    if: inputs.workflow == 'IncrementVersionNumber'
+    permissions:
+      actions: read
+      contents: write
+      id-token: write
+      pull-requests: write
+    uses: ./.github/workflows/IncrementVersionNumber.yaml
+    secrets: inherit
+    with:
+      caller: ${{ github.workflow }}
+      versionNumber: ${{ inputs.versionNumber }}
+      directCommit: ${{ inputs.directCommit }}
+
+  NextMajor:
+    if: inputs.workflow == 'NextMajor'
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+      packages: read
+    uses: ./.github/workflows/NextMajor.yaml
+    secrets: inherit
+    with:
+      caller: ${{ github.workflow }}
+
+  PublishToEnvironment:
+    if: inputs.workflow == 'PublishToEnvironment'
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+      pull-requests: read
+      checks: read
+    uses: ./.github/workflows/PublishToEnvironment.yaml
+    secrets: inherit
+    with:
+      caller: ${{ github.workflow }}
+      environmentName: ${{ inputs.environmentName }}
+      appVersion: ${{ inputs.appVersion }}
